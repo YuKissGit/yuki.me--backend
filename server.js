@@ -1,69 +1,63 @@
-require('dotenv').config(); // 读取 .env 文件
+//1. import------------------------------------
+const{escapeHTML,sendJSON} = require('./util');
 
+//read .env file, load from .env to process.env (for node.js)
+require('dotenv').config(); 
+
+//load module from node.js
 const http = require('http');
 const { MongoClient, ObjectId } = require('mongodb');
 const fs = require('fs');
 const path = require('path');
 
-const uri = process.env.MONGO_URI;
-const port = process.env.PORT || 3000;
+const uri = process.env.MONGO_URI; //Reads database connection string from environment variables.
+const port = process.env.PORT || 3000; //Uses the platform’s port if provided, otherwise defaults to 3000.
 
-// 创建 MongoClient 实例
+//2. Database MongoClient setup--------------------
 const client = new MongoClient(uri);
 
+//Declares a variable to store the comments collection
 let commentsCollection;
 
-// 连接数据库
+//database configure
 async function connectDB() {
-  await client.connect();
-  const db = client.db('myDatabase'); // 你 Atlas 里选择的数据库名
+  await client.connect(); //MongoDB: client → database → collection → documents
+  const db = client.db('myDatabase'); // the database name on Atlas
   commentsCollection = db.collection('comments');
   console.log('Connected to MongoDB Atlas');
 }
 
-// -------------------- 安全相关配置 --------------------
-
-// 允许的前端域名
-const allowedOrigins = ['http://127.0.0.1:5500']; // 改成你前端域名
-
-// IP 速率限制
+//3. safety configure (optional)--------------------------------
+// IP rate
 const rateLimitMap = new Map();
-const RATE_LIMIT = 5; // 每分钟最多提交 5 条评论
-const WINDOW_MS = 60 * 1000; // 1 分钟
+const RATE_LIMIT = 5; 
+const WINDOW_MS = 60 * 1000; //one minute
 
-// XSS 转义函数
-function escapeHTML(str) {
-  return str.replace(/[&<>"']/g, m => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  }[m]));
-}
+//4. Defines which frontend domains are allowed to access this backend---
+const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
 
-// 发送 JSON 响应
-function sendJSON(res, status, data) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(data));
-}
-
-// -------------------- HTTP Server --------------------
+//5. HTTP Server configure-------------------------------
 const server = http.createServer(async (req, res) => {
+
+  //5.1 instantly get current domain
   const origin = req.headers.origin;
 
-  // -------------------- CORS --------------------
-  if (origin && allowedOrigins.includes(origin)) {
+  //5.2 check if domain is required
+  // CORS ：Cross-Origin Resource Sharing
+  if (origin && allowedOrigins.includes(origin)) { //there may be multiple domain, but here I only have one 'https://yukime.vercel.app/'
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   }
 
+  //5.3 pre-require from browser, if no pre-require will fail
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
     return;
   }
+
+  //business features---------------------------
 
   // -------------------- 静态文件 --------------------
   if (req.method === 'GET' && (req.url === '/' || req.url.endsWith('.html'))) {
@@ -159,10 +153,11 @@ const server = http.createServer(async (req, res) => {
   res.end('Not Found');
 });
 
-// -------------------- 启动服务器 --------------------
+// 6. start server --------------------
+//server listen after connecting DB successfully 
 connectDB()
   .then(() => {
-    server.listen(port, () => console.log(`Server running at http://localhost:${port}`));
+    server.listen(port, () => console.log(`Server running at ${port}`));
   })
   .catch(err => {
     console.error('Failed to connect to MongoDB', err);
