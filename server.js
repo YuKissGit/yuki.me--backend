@@ -4,7 +4,7 @@ const{escapeHTML,sendJSON} = require('./util');
 //read .env file, load from .env to process.env (for node.js)
 require('dotenv').config(); 
 
-//load module from node.js
+//load node.js modules
 const http = require('http');
 const { MongoClient, ObjectId } = require('mongodb');
 const fs = require('fs');
@@ -34,14 +34,17 @@ const RATE_LIMIT = 5;
 const WINDOW_MS = 60 * 1000; //one minute
 
 //4. Defines which frontend domains are allowed to access this backend---
-const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
+// const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
+const allowedOrigins = ['http://127.0.0.1:5500', 'http://localhost:5500'];
+
 
 //5. HTTP Server configure-------------------------------
 const server = http.createServer(async (req, res) => {
 
   //5.1 instantly get current domain
   const origin = req.headers.origin;
-
+  console.log('origin: ', origin);
+  
   //5.2 check if domain is required
   // CORS ：Cross-Origin Resource Sharing
   if (origin && allowedOrigins.includes(origin)) { //there may be multiple domain, but here I only have one 'https://yukime.vercel.app/'
@@ -57,65 +60,64 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  //business features---------------------------
-
-  // -------------------- 静态文件 --------------------
-  if (req.method === 'GET' && (req.url === '/' || req.url.endsWith('.html'))) {
-    const filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url);
-    fs.readFile(filePath, (err, content) => {
-      if (err) {
-        res.writeHead(404);
-        return res.end('Not Found');
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(content);
-    });
-    return;
-  }
-
-  // -------------------- 获取评论 --------------------
+  //business features================================================
+  // -------get comment from DB--------
+  //because only comment tab need back end to load and get comment, so other request handled by frontend
   if (req.method === 'GET' && req.url === '/comments') {
     try {
-      const comments = await commentsCollection.find({}).sort({ createdAt: -1 }).toArray();
-      sendJSON(res, 200, comments);
+      const comments = await commentsCollection
+        .find({})
+        .sort({ createdAt: 1 }) // //tree use ase order?
+        .toArray();
+
+      const commentTree = buildTree(comments);
+
+        sendJSON(res, 200, commentTree);
     } catch (err) {
       console.error(err);
-      sendJSON(res, 500, { error: 'DB error' });
+      sendJSON(res, 500, { error: 'DataBase error in server.js file' });
     }
     return;
   }
 
-  // -------------------- 提交评论 --------------------
+  // ---------submit comments-----------
   if (req.method === 'POST' && req.url === '/comments') {
+
+    //1.get data first
     let body = '';
-    req.on('data', chunk => {
+    req.on('data', chunk => {//chunk is buffer send each time
       body += chunk;
-      if (body.length > 1e6) { // 限制最大 1MB
-        req.socket.destroy(); // 超过限制直接断开
+
+      // 1. HTTP request start (single POST request)
+      // 2. TCP layer splits request into multiple packets
+      // 3. Node.js 'data' events triggered multiple times (each chunk of the body)
+      // 4. TCP finishes sending all packets
+      // 5. Node.js 'end' event triggered (full request body received)
+      // 6. HTTP request ends (Node now has complete data)
+      if (body.length > 1e6) { // if >1MB.  /// body is single package, not entire data
+        req.socket.destroy(); // end the req
       }
     });
 
+    //2.validate and save data
     req.on('end', async () => {
       try {
         const data = JSON.parse(body);
-        const { name, email, content, website } = data;
+        const { name, email, content, parentId,website } = data;
 
-        // -------------------- honeypot 防垃圾 --------------------
-        if (website) {
-          return sendJSON(res, 200, { success: true }); // 隐蔽处理
+        //2-1.honeypot anti-spam --------------
+        if (website) { //website is a hidden field, bots usually auto-fill all form fields.
+          return sendJSON(res, 200, { success: true }); //Fake success response
         }
-
-        // -------------------- 必填字段检查 --------------------
+        //2-2. required field check -----------
         if (!name || !email || !content) {
           return sendJSON(res, 400, { success: false, message: 'Missing fields' });
         }
-
-        // -------------------- 数据长度限制 --------------------
+        //2-3. data length --------------------
         if (name.length > 50 || email.length > 50 || content.length > 500) {
           return sendJSON(res, 400, { success: false, message: 'Field too long' });
         }
-
-        // -------------------- 速率限制 --------------------
+        //2-4. submit rate--------------------
         const ip = req.socket.remoteAddress;
         const now = Date.now();
         let entry = rateLimitMap.get(ip) || [];
@@ -126,16 +128,17 @@ const server = http.createServer(async (req, res) => {
         entry.push(now);
         rateLimitMap.set(ip, entry);
 
-        // -------------------- XSS 转义 --------------------
+        //2-5. XSS：Cross-Site Scripting escaping--------------------
         const safeComment = {
           name: escapeHTML(name),
           email: escapeHTML(email),
           content: escapeHTML(content),
+          parentId: parentId ? new ObjectId(parentId) : null,
           createdAt: new Date(),
           ip
         };
 
-        // 插入数据库
+        //insert validated data into DB
         await commentsCollection.insertOne(safeComment);
 
         sendJSON(res, 200, { success: true, message: 'Comment saved' });
@@ -145,16 +148,17 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 400, { success: false, message: 'Invalid JSON or server error' });
       }
     });
+    //3. return
     return;
   }
 
-  // -------------------- 404 --------------------
+  // -------------404 --------------------
   res.writeHead(404);
   res.end('Not Found');
 });
 
 // 6. start server --------------------
-//server listen after connecting DB successfully 
+//server start to listen after connecting DB successfully 
 connectDB()
   .then(() => {
     server.listen(port, () => console.log(`Server running at ${port}`));
@@ -162,3 +166,27 @@ connectDB()
   .catch(err => {
     console.error('Failed to connect to MongoDB', err);
   });
+
+
+
+
+  function buildTree(comments) {
+  const map = {};
+  const roots = [];
+
+  comments.forEach(c => {
+    c.children = [];
+    map[c._id] = c;
+  });
+
+  comments.forEach(c => {
+    if (c.parentId) {
+      map[c.parentId]?.children.push(c);
+    } else {
+      roots.push(c);
+    }
+  });
+
+  return roots;
+}
+
