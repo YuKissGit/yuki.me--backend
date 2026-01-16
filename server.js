@@ -1,5 +1,5 @@
 //1. import------------------------------------
-const{escapeHTML,sendJSON} = require('./util');
+const{escapeHTML,sendJSON, buildTree} = require('./util');
 
 //read .env file, load from .env to process.env (for node.js)
 require('dotenv').config(); 
@@ -63,25 +63,61 @@ const server = http.createServer(async (req, res) => {
   //business features================================================
   // -------get comment from DB--------
   //because only comment tab need back end to load and get comment, so other request handled by frontend
-  if (req.method === 'GET' && req.url === '/comments') {
+
+  // 0. 解析 URL (这是关键！必须把路径和参数分开)
+  // req.url 可能是 "/comments?page=1&limit=5"
+  const baseURL =  `http://${req.headers.host}`;
+  const parsedUrl = new URL(req.url, baseURL);
+  const pathname = parsedUrl.pathname;
+  // --------- GET Comments (支持分页) -----------
+  // 注意：这里把 req.url === ... 改成了 pathname === ...
+  if (req.method === 'GET' && pathname === '/comments') {
     try {
-      const comments = await commentsCollection
+      // 1. 获取前端传来的页码参数 (默认 page=1, limit=100)
+      const page = parseInt(parsedUrl.searchParams.get('page')) || 1;
+      const limit = parseInt(parsedUrl.searchParams.get('limit')) || 15;
+
+      // 2. 查出数据库中 *所有* 评论 (为了保证树形结构的完整性)
+      // 如果数据量巨大(比如几万条)，需要改用 MongoDB 的 $graphLookup 聚合查询，
+      // 但对于目前规模，查全部再处理是最安全的。
+      const allComments = await commentsCollection
         .find({})
-        .sort({ createdAt: 1 }) // //tree use ase order?
+        .sort({ createdAt: -1 }) // 建议改用 -1 (最新的在最上面)，符合分页习惯
         .toArray();
 
-      const commentTree = buildTree(comments);
+      // 3. 构建完整的树
+      const fullTree = buildTree(allComments);
 
-        sendJSON(res, 200, commentTree);
+      // 4. 计算分页逻辑 (对 Tree 进行切片)
+      const totalRootComments = fullTree.length;
+      const totalPages = Math.ceil(totalRootComments / limit);
+      
+      // 计算切片的起始和结束位置
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+
+      // 5. 获取当前页的数据
+      const paginatedComments = fullTree.slice(startIndex, endIndex);
+
+      // 6. 返回包含分页信息的数据结构
+      sendJSON(res, 200, {
+        comments: paginatedComments, // 当前页的评论树
+        currentPage: page,
+        totalPages: totalPages,
+        totalItems: totalRootComments
+      });
+
     } catch (err) {
       console.error(err);
-      sendJSON(res, 500, { error: 'DataBase error in server.js file' });
+      sendJSON(res, 500, { error: 'Database error in server.js file' });
     }
     return;
   }
 
-  // ---------submit comments-----------
-  if (req.method === 'POST' && req.url === '/comments') {
+  //===========================================
+
+ // ---------submit comments-----------
+  if (req.method === 'POST' && pathname === '/comments') {
 
     //1.get data first
     let body = '';
@@ -167,26 +203,4 @@ connectDB()
     console.error('Failed to connect to MongoDB', err);
   });
 
-
-
-
-  function buildTree(comments) {
-  const map = {};
-  const roots = [];
-
-  comments.forEach(c => {
-    c.children = [];
-    map[c._id] = c;
-  });
-
-  comments.forEach(c => {
-    if (c.parentId) {
-      map[c.parentId]?.children.push(c);
-    } else {
-      roots.push(c);
-    }
-  });
-
-  return roots;
-}
 
