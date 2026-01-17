@@ -34,8 +34,8 @@ const RATE_LIMIT = 5;
 const WINDOW_MS = 60 * 1000; //one minute
 
 //4. Defines which frontend domains are allowed to access this backend---
-// const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
-const allowedOrigins = ['http://127.0.0.1:5500', 'http://localhost:5500'];
+const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
+// const allowedOrigins = ['http://127.0.0.1:5500', 'http://localhost:5500'];
 
 
 //5. HTTP Server configure-------------------------------
@@ -64,44 +64,39 @@ const server = http.createServer(async (req, res) => {
   // -------get comment from DB--------
   //because only comment tab need back end to load and get comment, so other request handled by frontend
 
-  // 0. 解析 URL (这是关键！必须把路径和参数分开)
-  // req.url 可能是 "/comments?page=1&limit=5"
+  // parse URL-----------
+  // req.url maybe "/comments?page=1&limit=5"
   const baseURL =  `http://${req.headers.host}`;
   const parsedUrl = new URL(req.url, baseURL);
   const pathname = parsedUrl.pathname;
-  // --------- GET Comments (支持分页) -----------
-  // 注意：这里把 req.url === ... 改成了 pathname === ...
+
+  // GET Comments -----------
   if (req.method === 'GET' && pathname === '/comments') {
     try {
-      // 1. 获取前端传来的页码参数 (默认 page=1, limit=100)
+      // 1. get setting from front end ??
       const page = parseInt(parsedUrl.searchParams.get('page')) || 1;
       const limit = parseInt(parsedUrl.searchParams.get('limit')) || 15;
 
-      // 2. 查出数据库中 *所有* 评论 (为了保证树形结构的完整性)
-      // 如果数据量巨大(比如几万条)，需要改用 MongoDB 的 $graphLookup 聚合查询，
-      // 但对于目前规模，查全部再处理是最安全的。
+      // 2. get all the data (this case data is not that big), so it loop again each req? how to jump newer and older?
       const allComments = await commentsCollection
         .find({})
-        .sort({ createdAt: -1 }) // 建议改用 -1 (最新的在最上面)，符合分页习惯
+        .sort({ createdAt: -1 }) //  -1 des
         .toArray();
 
-      // 3. 构建完整的树
+      // 3. build tree cut tree
       const fullTree = buildTree(allComments);
-
-      // 4. 计算分页逻辑 (对 Tree 进行切片)
       const totalRootComments = fullTree.length;
       const totalPages = Math.ceil(totalRootComments / limit);
-      
-      // 计算切片的起始和结束位置
+    
       const startIndex = (page - 1) * limit;
       const endIndex = startIndex + limit;
 
-      // 5. 获取当前页的数据
+      // 4. current page data
       const paginatedComments = fullTree.slice(startIndex, endIndex);
 
-      // 6. 返回包含分页信息的数据结构
+      // 6. return with current page comment
       sendJSON(res, 200, {
-        comments: paginatedComments, // 当前页的评论树
+        comments: paginatedComments,
         currentPage: page,
         totalPages: totalPages,
         totalItems: totalRootComments
@@ -113,8 +108,6 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
-
-  //===========================================
 
  // ---------submit comments-----------
   if (req.method === 'POST' && pathname === '/comments') {
@@ -187,6 +180,55 @@ const server = http.createServer(async (req, res) => {
     //3. return
     return;
   }
+
+//----------------count snow----------------------
+  //1. get current num from DB
+  if (req.method === 'GET' && pathname === '/api/snow-clicks') {
+    try {
+      const db = client.db('myDatabase'); 
+      const countersCollection = db.collection('counters');
+
+      const counter = await countersCollection.findOne({ name: 'snow_clicks' });
+      const count = counter ? counter.count : 0;
+      
+      sendJSON(res, 200, { count: count });
+    } catch (err) {
+      console.error(err);
+      sendJSON(res, 500, { error: 'Failed to fetch clicks' });
+    }
+    return;
+  }
+
+  // 2. add num
+  if (req.method === 'POST' && pathname === '/api/snow-clicks') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const data = JSON.parse(body);
+        const incrementBy = data.incrementBy || 1; //get increment from front end
+
+        const db = client.db('myDatabase');
+        const countersCollection = db.collection('counters');
+
+        // updata to DB
+        const result = await countersCollection.findOneAndUpdate(
+          { name: 'snow_clicks' },
+          { $inc: { count: incrementBy } },
+          { returnDocument: 'after', upsert: true } 
+        );
+
+        const newCount = result ? result.count : 0; //MongoDB return value type is different across versions
+        
+        sendJSON(res, 200, { success: true, count: newCount });
+      } catch (err) {
+        console.error(err);
+        sendJSON(res, 500, { error: 'Update failed' });
+      }
+    });
+    return;
+  }
+
 
   // -------------404 --------------------
   res.writeHead(404);
