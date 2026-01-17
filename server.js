@@ -34,7 +34,7 @@ const RATE_LIMIT = 5;
 const WINDOW_MS = 60 * 1000; //one minute
 
 //4. Defines which frontend domains are allowed to access this backend---
-const allowedOrigins = ['https://yukime.vercel.app/']; //here we can add more, like mobile domain
+const allowedOrigins = ['https://yukime.vercel.app']; //here we can add more, like mobile domain
 // const allowedOrigins = ['http://127.0.0.1:5500', 'http://localhost:5500'];
 
 
